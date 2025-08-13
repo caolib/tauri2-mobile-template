@@ -44,20 +44,21 @@ android {
                     .toList().toTypedArray()
             )
             // 签名配置：依赖 GitHub Actions 注入的环境变量
-            val keystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
-            val keystorePass = System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("KEYSTORE_PASS")
-            val keyAlias = System.getenv("KEY_ALIAS") ?: "my-key-alias"
-            val keyPass = System.getenv("KEY_PASSWORD") ?: keystorePass
-            if (!keystoreFile.isNullOrBlank() && !keystorePass.isNullOrBlank()) {
-                println("Using signing config with keystore: $keystoreFile")
-                signingConfig = signingConfigs.create("releaseAuto") {
-                    storeFile = file(keystoreFile)
-                    storePassword = keystorePass
-                    keyAlias = keyAlias
-                    keyPassword = keyPass
-                }
+            val envKeystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
+            val envKeystorePass = System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("KEYSTORE_PASS")
+            val envKeyAlias = System.getenv("KEY_ALIAS") ?: "my-key-alias"
+            val envKeyPass = System.getenv("KEY_PASSWORD") ?: envKeystorePass
+            if (!envKeystoreFile.isNullOrBlank() && !envKeystorePass.isNullOrBlank()) {
+                println("Using signing config with keystore: $envKeystoreFile")
+                // 使用 maybeCreate 避免重复创建同名 signingConfig 抛异常
+                val cfg = signingConfigs.maybeCreate("releaseAuto")
+                cfg.storeFile = file(envKeystoreFile)
+                cfg.storePassword = envKeystorePass
+                cfg.keyAlias = envKeyAlias
+                cfg.keyPassword = envKeyPass
+                signingConfig = cfg
             } else {
-                println("[WARN] Keystore info not fully provided. Building unsigned release APK.")
+                println("[WARN] Keystore info not fully provided (ANDROID_KEYSTORE_FILE / KEYSTORE_PASSWORD). Building unsigned release APK.")
             }
         }
     }
