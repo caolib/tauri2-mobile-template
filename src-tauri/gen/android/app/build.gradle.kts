@@ -43,6 +43,22 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
+            // 签名配置：依赖 GitHub Actions 注入的环境变量
+            val keystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
+            val keystorePass = System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("KEYSTORE_PASS")
+            val keyAlias = System.getenv("KEY_ALIAS") ?: "my-key-alias"
+            val keyPass = System.getenv("KEY_PASSWORD") ?: keystorePass
+            if (!keystoreFile.isNullOrBlank() && !keystorePass.isNullOrBlank()) {
+                println("Using signing config with keystore: $keystoreFile")
+                signingConfig = signingConfigs.create("releaseAuto") {
+                    storeFile = file(keystoreFile)
+                    storePassword = keystorePass
+                    keyAlias = keyAlias
+                    keyPassword = keyPass
+                }
+            } else {
+                println("[WARN] Keystore info not fully provided. Building unsigned release APK.")
+            }
         }
     }
     kotlinOptions {

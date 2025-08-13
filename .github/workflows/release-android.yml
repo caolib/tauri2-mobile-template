@@ -1,18 +1,68 @@
-
-name: "android-release"
+name: android-release
 
 on:
   push:
     tags:
       - "v*"
 
-jobs:
-  quick-build:
-    runs-on: ubuntu-22.04
+concurrency:
+  group: android-release-${{ github.ref }}
+  cancel-in-progress: true
 
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      FAIL_IF_NO_KEYSTORE: "false"
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
+
+      - name: 解析版本号并更新
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          VERSION="${VERSION#v}"
+          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "✅ 已设定版本号: $VERSION"
+
+      - name: 检测并准备签名密钥（只使用 Secrets.KEYSTORE）
+        id: keystore
+        run: |
+          set -e
+          KS="${{ secrets.KEYSTORE }}"
+          if [ -z "$KS" ]; then
+            echo "⚠️ 未找到签名密钥（KEYSTORE），将标记跳过签名相关逻辑。"
+            echo "SKIP_SIGNING=true" >> $GITHUB_ENV
+            if [ "$FAIL_IF_NO_KEYSTORE" = "true" ]; then
+              echo "❌ 已配置必须存在密钥，终止。"
+              exit 1
+            fi
+            exit 0
+          fi
+          mkdir -p src-tauri
+          echo "$KS" | base64 -d > src-tauri/doki-release-key.keystore 2>/dev/null || {
+            echo "⚠️ base64 解码失败，尝试直接写入。";
+            printf "%s" "$KS" > src-tauri/doki-release-key.keystore
+          }
+          if [ -s src-tauri/doki-release-key.keystore ]; then
+            echo "✅ 已生成 keystore 文件"
+            echo "SKIP_SIGNING=false" >> $GITHUB_ENV
+            echo "ANDROID_KEYSTORE_FILE=$PWD/src-tauri/doki-release-key.keystore" >> $GITHUB_ENV
+            echo "::add-mask::$KS"
+            if command -v sha256sum >/dev/null 2>&1; then
+              FPRINT=$(sha256sum src-tauri/doki-release-key.keystore | cut -d' ' -f1)
+              echo "签名文件 SHA256: $FPRINT"
+            fi
+          else
+            echo "❌ 生成 keystore 失败，继续无签名构建"
+            echo "SKIP_SIGNING=true" >> $GITHUB_ENV
+          fi
 
       - name: 安装 pnpm
         uses: pnpm/action-setup@v4
@@ -23,7 +73,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "lts/*"
-          cache: "pnpm"
+          cache: pnpm
 
       - name: 缓存 pnpm 仓库
         uses: actions/cache@v4
@@ -34,7 +84,7 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: 安装前端依赖
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile || pnpm install --no-frozen-lockfile
 
       - name: 安装 Rust stable 及 Android 目标
         uses: dtolnay/rust-toolchain@stable
@@ -96,8 +146,8 @@ jobs:
       - name: 设置 Java JDK
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "17"
+          distribution: temurin
+          java-version: 17
 
       - name: 设置 Android SDK
         uses: android-actions/setup-android@v3
@@ -119,42 +169,18 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME" >> $GITHUB_ENV
           echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
 
-          echo "Android环境变量设置："
-          echo "ANDROID_HOME: $ANDROID_HOME"
-          echo "JAVA_HOME: $JAVA_HOME"
-          echo "NDK_HOME: $ANDROID_HOME/ndk/26.1.10909125"
-
-
-      - name: 设置 Android 签名密钥（如有密钥）
-        run: |
-            if [ -n "${{ secrets.KEYSTORE }}" ]; then
-              echo "${{ secrets.KEYSTORE }}" | base64 -d > doki-release-key.keystore
-              echo "✅ 已还原 doki-release-key.keystore 文件"
-            else
-              echo "⚠️ 未找到签名密钥，将构建未签名APK"
-            fi
-
-      - name: 更新 tauri.conf.json 版本号
-        run: |
-          VERSION="${{ github.event.client_payload.version || github.event.inputs.version }}"
-          VERSION="${VERSION#v}"
-          sed -i "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" src-tauri/tauri.conf.json
-          echo "Updated version to: $VERSION"
-
       - name: 缓存前端构建
         uses: actions/cache@v4
         id: frontend-cache
         with:
           path: |
             dist
-            .next
             node_modules/.cache
-          key: ${{ runner.os }}-frontend-${{ hashFiles('**/package.json', '**/pnpm-lock.yaml', 'src/**', 'public/**') }}
+          key: ${{ runner.os }}-frontend-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'vite.config.*', 'tsconfig.json') }}
           restore-keys: |
             ${{ runner.os }}-frontend-
 
       - name: 构建前端
-        if: steps.frontend-cache.outputs.cache-hit != 'true'
         run: pnpm build
 
       - name: 缓存 Tauri Android 生成
@@ -173,108 +199,44 @@ jobs:
             pnpm tauri android init
           fi
 
-      - name: 设置 Gradle wrapper 并修复下载问题
-        run: |
-          cd src-tauri/gen/android
-
-          # 检查gradle-wrapper.properties
-          if [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-            echo "当前Gradle配置："
-            cat gradle/wrapper/gradle-wrapper.properties
-            
-            sed -i 's|https://services.gradle.org/distributions/|https://downloads.gradle.org/distributions/|g' gradle/wrapper/gradle-wrapper.properties
-            
-            cat gradle/wrapper/gradle-wrapper.properties
-          fi
-
-          # 验证gradlew权限
-          chmod +x gradlew
-
-          # 尝试预下载Gradle（带重试机制）
-          echo "预下载Gradle包..."
-          for i in {1..3}; do
-            echo "尝试 $i/3..."
-            if ./gradlew --version; then
-              echo "✅ Gradle下载成功"
-              break
-            else
-              echo "⚠️ 第$i次尝试失败，等待10秒后重试..."
-              sleep 10
-            fi
-            
-            if [ $i -eq 3 ]; then
-              echo "❌ Gradle下载失败，尝试手动下载..."
-              
-              # 手动下载Gradle
-              GRADLE_VERSION=$(grep "distributionUrl" gradle/wrapper/gradle-wrapper.properties | cut -d'/' -f6 | cut -d'-' -f2)
-              echo "检测到Gradle版本: $GRADLE_VERSION"
-              
-              mkdir -p ~/.gradle/wrapper/dists/gradle-$GRADLE_VERSION-bin
-              cd ~/.gradle/wrapper/dists/gradle-$GRADLE_VERSION-bin
-              
-              # 尝试多个下载源
-              GRADLE_URLS=(
-                "https://downloads.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
-                "https://github.com/gradle/gradle/releases/download/v$GRADLE_VERSION.0/gradle-$GRADLE_VERSION-bin.zip"
-                "https://services.gradle.org/distributions/gradle-$GRADLE_VERSION-bin.zip"
-              )
-              
-              for url in "${GRADLE_URLS[@]}"; do
-                echo "尝试从 $url 下载..."
-                if wget -q --timeout=30 --tries=2 "$url"; then
-                  echo "✅ 手动下载成功"
-                  break
-                fi
-              done
-            fi
-          done
-
-
       - name: 安装所有 Android Rust 目标
         run: |
-          echo "安装所有Android Rust目标..."
-          rustup target add aarch64-linux-android
-          rustup target add armv7-linux-androideabi  
-          rustup target add i686-linux-android
-          rustup target add x86_64-linux-android
-          echo "✅ 所有Android Rust目标已安装"
+          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
-      - name: 构建所有平台的 Android APK
+      - name: 构建 Android APK (所有架构)
         run: |
-          echo "开始构建Android APK"
           export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx2g"
           pnpm gen
 
-      - name: 列出生成的 APK 文件
+      - name: 列出生成的 APK 文件并计算指纹
         run: |
-          echo "检查生成的APK文件..."
-
-          # 检查原始APK目录
-          ORIGINAL_APK_DIR="src-tauri/gen/android/app/build/outputs/apk/universal/release"
-          if [ -d "$ORIGINAL_APK_DIR" ]; then
-            echo "原始APK目录内容："
-            ls -la "$ORIGINAL_APK_DIR"
-          fi
-
-          echo ""
-          echo "查找所有APK文件（包括重命名后的）："
-          find . -name "*.apk" -type f -exec ls -lh {} \; | while read line; do
-            echo "  $line"
-          done
-
+          echo "查找 APK..."
+          find . -name "*.apk" -type f -exec ls -lh {} \;
           APK_COUNT=$(find . -name "*.apk" -type f | wc -l)
-          echo ""
-          echo "总共找到 $APK_COUNT 个APK文件"
+          echo "总数: $APK_COUNT"
+          echo "计算 SHA256..."
+          find . -name "*.apk" -type f -print0 | while IFS= read -r -d '' f; do sha256sum "$f"; done | tee apk_sha256.txt
+
+      - name: 生成发布说明
+        run: |
+          {
+            echo "Version: ${VERSION}";
+            echo "Tag: ${GITHUB_REF_NAME}";
+            echo "Commit: ${GITHUB_SHA}";
+            echo "Build ID: ${GITHUB_RUN_ID}";
+            echo "";
+            echo "APK SHA256:";
+            cat apk_sha256.txt;
+          } > release_body.md
 
       - name: 创建 Android 发布并上传 APK
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.event.client_payload.version, 'v') || startsWith(github.event.inputs.version, 'v')
         with:
-          tag_name: ${{ github.event.client_payload.android_tag || format('{0}-android', github.event.client_payload.version || github.event.inputs.version) }}
-          name: "APP ${{ github.event.client_payload.version || github.event.inputs.version }}"
+          tag_name: ${{ github.ref_name }}
+          name: APP ${{ env.VERSION || github.ref_name }}
           draft: false
           prerelease: false
-          body: ""
+          body_path: release_body.md
           files: |
             **/*.apk
         env:
