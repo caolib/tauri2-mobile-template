@@ -192,7 +192,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-tauri-android-
 
-      - name: 初始化 Tauri Android 项目（如有需要）
+      - name: 初始化 Tauri Android 项目
         if: steps.tauri-android-cache.outputs.cache-hit != 'true'
         run: |
           if [ ! -d "src-tauri/gen/android" ]; then
@@ -203,7 +203,7 @@ jobs:
         run: |
           rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
 
-      - name: 构建 Android APK (所有架构)
+      - name: 构建 Android APK
         run: |
           export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx2g"
           pnpm gen
