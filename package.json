@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
+    "start": "tauri android dev",
+    "gen": "tauri android build --apk",
     "preview": "vite preview",
     "tauri": "tauri"
   },
