@@ -89,7 +89,7 @@ jobs:
       - name: 安装 Rust stable 及 Android 目标
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
 
       - name: 缓存 Rust
         uses: swatinem/rust-cache@v2
@@ -131,23 +131,27 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: 缓存 Android SDK
-        uses: actions/cache@v4
-        id: android-cache
-        with:
-          path: |
-            ${{ env.ANDROID_HOME }}
-            ~/.android
-          key: ${{ runner.os }}-android-sdk-34-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-android-sdk-34-
-            ${{ runner.os }}-android-sdk-
-
       - name: 设置 Java JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
+
+      - name: 缓存 Android SDK 组件
+        uses: actions/cache@v4
+        id: android-cache
+        with:
+          path: |
+            /usr/local/lib/android/sdk/platforms/android-34
+            /usr/local/lib/android/sdk/build-tools/34.0.0
+            /usr/local/lib/android/sdk/ndk/26.1.10909125
+            /usr/local/lib/android/sdk/platform-tools
+            /usr/local/lib/android/sdk/cmdline-tools/latest
+            ~/.android/repositories.cfg
+          key: ${{ runner.os }}-android-sdk-v2-34.0.0-ndk26.1
+          restore-keys: |
+            ${{ runner.os }}-android-sdk-v2-34.0.0
+            ${{ runner.os }}-android-sdk-v2
 
       - name: 设置 Android SDK
         uses: android-actions/setup-android@v3
@@ -155,6 +159,7 @@ jobs:
       - name: 安装 Android SDK 组件
         if: steps.android-cache.outputs.cache-hit != 'true'
         run: |
+          echo "缓存未命中，安装 Android SDK 组件..."
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platform-tools" \
@@ -192,30 +197,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-tauri-android-
 
-      - name: 初始化 Tauri Android 项目（如有需要）
+      - name: 初始化 Tauri Android 项目
         if: steps.tauri-android-cache.outputs.cache-hit != 'true'
         run: |
           if [ ! -d "src-tauri/gen/android" ]; then
             pnpm tauri android init
           fi
 
-      - name: 安装所有 Android Rust 目标
+      - name: 安装 Android Rust 目标 (arm64-v8a)
         run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+          rustup target add aarch64-linux-android
 
-      - name: 构建 Android APK (所有架构)
+      - name: 构建 Android APK
         run: |
           export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false -Dorg.gradle.jvmargs=-Xmx2g"
           pnpm gen
 
-      - name: 列出生成的 APK 文件并计算指纹
+      - name: 列出生成的 APK 文件
         run: |
           echo "查找 APK..."
           find . -name "*.apk" -type f -exec ls -lh {} \;
           APK_COUNT=$(find . -name "*.apk" -type f | wc -l)
           echo "总数: $APK_COUNT"
-          echo "计算 SHA256..."
-          find . -name "*.apk" -type f -print0 | while IFS= read -r -d '' f; do sha256sum "$f"; done | tee apk_sha256.txt
 
       - name: 生成发布说明
         run: |
@@ -224,9 +227,6 @@ jobs:
             echo "Tag: ${GITHUB_REF_NAME}";
             echo "Commit: ${GITHUB_SHA}";
             echo "Build ID: ${GITHUB_RUN_ID}";
-            echo "";
-            echo "APK SHA256:";
-            cat apk_sha256.txt;
           } > release_body.md
 
       - name: 创建 Android 发布并上传 APK

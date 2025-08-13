@@ -24,13 +24,33 @@ android {
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
     }
+    // ABI 分包策略：
+    // 1. 如果存在 KEYSTORE_PASSWORD 环境变量（workflow 中设置），说明是 CI 构建，启用分包
+    // 2. 或者手动设置 ENABLE_ABI_SPLITS=true 强制开启
+    // 3. 本地开发（无 KEYSTORE_PASSWORD）不分包，避免 tauri android dev 找不到路径
+    val hasKeystoreConfig = !System.getenv("KEYSTORE_PASSWORD").isNullOrBlank()
+    val enableAbiSplits = hasKeystoreConfig || System.getenv("ENABLE_ABI_SPLITS") == "true"
+    if (enableAbiSplits) {
+        println("[build.gradle] ${if (hasKeystoreConfig) "CI 构建 (检测到 KEYSTORE_PASSWORD)" else "手动启用"}：启用 ABI 分包 (arm64-v8a + universal)")
+    } else {
+        println("[build.gradle] 本地开发模式：禁用 ABI 分包 (单一 APK)")
+    }
+    splits {
+        abi {
+            isEnable = enableAbiSplits
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = true
+        }
+    }
     buildTypes {
         getByName("debug") {
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isDebuggable = true
             isJniDebuggable = true
             isMinifyEnabled = false
-            packaging {                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
+            packaging {                
+                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")
                 jniLibs.keepDebugSymbols.add("*/armeabi-v7a/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86/*.so")
                 jniLibs.keepDebugSymbols.add("*/x86_64/*.so")
